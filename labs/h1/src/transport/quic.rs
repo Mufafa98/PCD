@@ -47,11 +47,12 @@ pub struct QuicCommunicationChannel {
 }
 
 fn get_config() -> Result<quiche::Config, quiche::Error> {
+    let max_data = Size::GB(2).to_bytes() as u64;
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
     config.set_application_protos(&[b"\x0ahq-interop"])?;
-    config.set_initial_max_data(Size::GB(2).to_bytes() as u64);
-    config.set_initial_max_stream_data_bidi_local(Size::GB(2).to_bytes() as u64);
-    config.set_initial_max_stream_data_bidi_remote(Size::GB(2).to_bytes() as u64);
+    config.set_initial_max_data(max_data);
+    config.set_initial_max_stream_data_bidi_local(max_data);
+    config.set_initial_max_stream_data_bidi_remote(max_data);
     config.set_initial_max_streams_bidi(5);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
@@ -63,7 +64,7 @@ fn get_config() -> Result<quiche::Config, quiche::Error> {
 
 fn drain_incoming(socket: &UdpSocket, conn: &mut quiche::Connection) -> std::io::Result<bool> {
     let mut buf = [0; MAX_DATAGRAM_SIZE];
-    let to = socket.local_addr()?; // local
+    let to = socket.local_addr()?;
     let mut got_data = false;
     loop {
         match socket.recv_from(&mut buf) {
@@ -99,13 +100,15 @@ fn wait_for_data(socket: &UdpSocket, conn: &mut quiche::Connection) -> std::io::
                 drain_incoming(socket, conn)?;
                 return Ok(());
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    conn.on_timeout();
-                    return Ok(());
+            Err(e) => match e.kind() {
+                ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        conn.on_timeout();
+                        return Ok(());
+                    }
                 }
-            }
-            Err(e) => return Err(e),
+                _ => return Err(e),
+            },
         }
     }
 }
@@ -119,7 +122,7 @@ impl NetworkProtocol for Quic {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
 
         socket.set_nonblocking(true)?;
-
+        
         let mut scid = [0; quiche::MAX_CONN_ID_LEN];
         StdRng::seed_from_u64(314).fill_bytes(&mut scid);
         let scid = quiche::ConnectionId::from_ref(&scid);
